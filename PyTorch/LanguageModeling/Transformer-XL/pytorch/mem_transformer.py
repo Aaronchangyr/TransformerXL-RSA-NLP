@@ -26,6 +26,36 @@ def add_and_scale(tensor1, tensor2, alpha: float):
     return alpha * (tensor1 + tensor2)
 
 
+class REM(nn.Module):
+    def __init__(self, k1, k2, k3, k4, k5, k6, d, truncation):
+        super(REM, self).__init__()
+        self.k1, self.k2, self.k3, self.k4, self.k5, self.k6 = k1, k2, k3, k4, k5, k6
+        self.d, self.truncation = d, truncation
+
+    def create_Toeplitz_3D(self, d, truncation):
+        # Dummy implementation for illustration
+        return torch.randn(d, truncation, truncation)  # Random Toeplitz matrix
+
+    def get_sinusoid(self, L, theta):
+        M = torch.mul(L, theta)  # Using torch.mul for element-wise multiplication
+        s1 = torch.cos(M[:self.k2, ])
+        s2 = torch.sin(M[self.k2:(self.k2 + self.k3), ])
+        s3 = torch.cos(M[(self.k2 + self.k3):(self.k2 + self.k3 + self.k4), ])
+        s4 = torch.sin(M[(self.k2 + self.k3 + self.k4):, ])
+        s = torch.cat([s1, s2, s3, s4], dim=0)
+        return s
+
+    def forward(self, eta, nu, theta):
+        lambda_ = torch.tanh(eta)
+        gamma = torch.sigmoid(nu)
+        L = self.create_Toeplitz_3D(self.d, self.truncation)  # L is of shape (n_heads x query_len x key_len)
+        s = self.get_sinusoid(L, theta)
+        powered_lambda = torch.pow(lambda_, L)
+        powered_gamma = torch.pow(gamma, L)
+        REM = torch.cat([powered_lambda, torch.mul(powered_gamma, s)], dim=0)
+        return REM
+
+
 class PositionalEmbedding(nn.Module):
     def __init__(self, demb):
         super(PositionalEmbedding, self).__init__()
@@ -191,7 +221,7 @@ class RelMultiHeadAttn(nn.Module):
 
     def _shift(self, x, qlen, klen, mask, left=False):
         if qlen > 1:
-            zero_pad = torch.zeros((x.size(0), qlen-1, x.size(2), x.size(3)),
+            zero_pad = torch.zeros((x.size(0), qlen - 1, x.size(2), x.size(3)),
                                    device=x.device, dtype=x.dtype)
         else:
             zero_pad = torch.zeros(0, device=x.device, dtype=x.dtype)
@@ -203,7 +233,7 @@ class RelMultiHeadAttn(nn.Module):
             x_padded = torch.cat([x, zero_pad], dim=1).expand(qlen, -1, -1, -1)
 
         x = x_padded.masked_select(mask[:, :, None, None]) \
-                    .view(qlen, klen, x.size(2), x.size(3))
+            .view(qlen, klen, x.size(2), x.size(3))
 
         return x
 
@@ -260,14 +290,14 @@ class RelPartialLearnableMultiHeadAttn(RelMultiHeadAttn):
         w_head_k = w_head_k.view(klen, bsz, self.n_head, self.d_head)  # klen x bsz x n_head x d_head
         w_head_v = w_head_v.view(klen, bsz, self.n_head, self.d_head)  # klen x bsz x n_head x d_head
 
-        r_head_k = r_head_k.view(rlen, self.n_head, self.d_head)       # qlen x n_head x d_head
+        r_head_k = r_head_k.view(rlen, self.n_head, self.d_head)  # qlen x n_head x d_head
 
         # compute attention score
-        rw_head_q = w_head_q + r_w_bias                                # qlen x bsz x n_head x d_head
-        AC = torch.einsum('ibnd,jbnd->bnij', rw_head_q, w_head_k)      # bsz x n_head x qlen x klen
+        rw_head_q = w_head_q + r_w_bias  # qlen x bsz x n_head x d_head
+        AC = torch.einsum('ibnd,jbnd->bnij', rw_head_q, w_head_k)  # bsz x n_head x qlen x klen
 
         rr_head_q = w_head_q + r_r_bias
-        BD = torch.einsum('ibnd,jnd->bnij', rr_head_q, r_head_k)       # bsz x n_head x qlen x klen
+        BD = torch.einsum('ibnd,jnd->bnij', rr_head_q, r_head_k)  # bsz x n_head x qlen x klen
         BD = self._rel_shift(BD)
 
         # [bsz x n_head x qlen x klen]
@@ -339,9 +369,9 @@ class RelLearnableMultiHeadAttn(RelMultiHeadAttn):
         w_head_v = w_head_v.view(klen, bsz, self.n_head, self.d_head)
 
         if klen > r_emb.size(0):
-            r_emb_pad = r_emb[0:1].expand(klen-r_emb.size(0), -1, -1)
+            r_emb_pad = r_emb[0:1].expand(klen - r_emb.size(0), -1, -1)
             r_emb = torch.cat([r_emb_pad, r_emb], 0)
-            r_bias_pad = r_bias[0:1].expand(klen-r_bias.size(0), -1)
+            r_bias_pad = r_bias[0:1].expand(klen - r_bias.size(0), -1)
             r_bias = torch.cat([r_bias_pad, r_bias], 0)
         else:
             r_emb = r_emb[-klen:]
@@ -350,11 +380,11 @@ class RelLearnableMultiHeadAttn(RelMultiHeadAttn):
         r_bias = r_bias.t()
 
         # compute attention score
-        rw_head_q = w_head_q + r_w_bias[None]                      # qlen x bsz x n_head x d_head
+        rw_head_q = w_head_q + r_w_bias[None]  # qlen x bsz x n_head x d_head
 
         AC = torch.einsum('ibnd,jbnd->bnij', rw_head_q, w_head_k)  # bsz x n_head x qlen x klen
-        B_ = torch.einsum('ibnd,jnd->bnij', w_head_q, r_emb)       # bsz x n_head x qlen x klen
-        D_ = r_bias[None, :, None, :]                              # 1   x n_head x    1 x klen
+        B_ = torch.einsum('ibnd,jnd->bnij', w_head_q, r_emb)  # bsz x n_head x qlen x klen
+        D_ = r_bias[None, :, None, :]  # 1   x n_head x    1 x klen
         BD = self._rel_shift(B_ + D_)
 
         # [bsz x qlen x klen x n_head]
@@ -401,7 +431,6 @@ class DecoderLayer(nn.Module):
                                      pre_lnorm=kwargs.get('pre_lnorm'))
 
     def forward(self, dec_inp, dec_attn_mask=None, mems=None):
-
         output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask,
                                mems=mems)
         output = self.pos_ff(output)
@@ -420,7 +449,6 @@ class RelLearnableDecoderLayer(nn.Module):
                                      pre_lnorm=kwargs.get('pre_lnorm'))
 
     def forward(self, dec_inp, r_emb, r_w_bias, r_bias, dec_attn_mask=None, mems=None):
-
         output = self.dec_attn(dec_inp, r_emb, r_w_bias, r_bias,
                                attn_mask=dec_attn_mask,
                                mems=mems)
@@ -441,7 +469,6 @@ class RelPartialLearnableDecoderLayer(nn.Module):
                                      pre_lnorm=kwargs.get('pre_lnorm'))
 
     def forward(self, dec_inp, r, r_w_bias, r_r_bias, dec_attn_mask=None, mems=None):
-
         output = self.dec_attn(dec_inp, r, r_w_bias, r_r_bias,
                                attn_mask=dec_attn_mask,
                                mems=mems)
@@ -476,9 +503,9 @@ class AdaptiveEmbedding(nn.Module):
                 self.emb_projs.append(nn.Parameter(torch.Tensor(d_proj, d_embed).zero_()))
         else:
             for i in range(len(self.cutoffs)):
-                l_idx, r_idx = self.cutoff_ends[i], self.cutoff_ends[i+1]
+                l_idx, r_idx = self.cutoff_ends[i], self.cutoff_ends[i + 1]
                 d_emb_i = d_embed // (div_val ** i)
-                self.emb_layers.append(nn.Embedding(r_idx-l_idx, d_emb_i))
+                self.emb_layers.append(nn.Embedding(r_idx - l_idx, d_emb_i))
                 self.emb_projs.append(nn.Parameter(torch.Tensor(d_proj, d_emb_i).zero_()))
 
     def forward(self, inp):
@@ -598,7 +625,6 @@ class MemTransformerLM(nn.Module):
                                                     out_projs=emb_projs,
                                                     out_layers_weights=emb_layers)
 
-
         self.same_length = same_length
         self.clamp_len = clamp_len
 
@@ -616,18 +642,18 @@ class MemTransformerLM(nn.Module):
         # learnable
         elif self.attn_type == 1:
             self.r_emb = nn.Parameter(torch.Tensor(
-                    self.n_layer, self.max_klen, self.n_head, self.d_head).zero_())
+                self.n_layer, self.max_klen, self.n_head, self.d_head).zero_())
             self.r_w_bias = nn.Parameter(torch.Tensor(
-                    self.n_layer, self.n_head, self.d_head).zero_())
+                self.n_layer, self.n_head, self.d_head).zero_())
             self.r_bias = nn.Parameter(torch.Tensor(
-                    self.n_layer, self.max_klen, self.n_head).zero_())
+                self.n_layer, self.max_klen, self.n_head).zero_())
         # absolute standard
         elif self.attn_type == 2:
             self.pos_emb = PositionalEmbedding(self.d_model)
         # absolute deeper SA
         elif self.attn_type == 3:
             self.r_emb = nn.Parameter(torch.Tensor(
-                    self.n_layer, self.max_klen, self.d_model).zero_())
+                self.n_layer, self.max_klen, self.d_model).zero_())
 
     def reset_length(self, tgt_len, ext_len, mem_len):
         if tgt_len < 1:
@@ -665,9 +691,9 @@ class MemTransformerLM(nn.Module):
         with torch.no_grad():
             stacked = torch.stack(hids)
             if (
-                self.mem_len == self.tgt_len
-                and self.ext_len == 0
-                and stacked.size(1) == self.mem_len
+                    self.mem_len == self.tgt_len
+                    and self.ext_len == 0
+                    and stacked.size(1) == self.mem_len
             ):
                 new_mems = stacked.detach()
             else:
@@ -695,16 +721,16 @@ class MemTransformerLM(nn.Module):
                 mask_shift_len = qlen - mask_len
             else:
                 mask_shift_len = qlen
-            dec_attn_mask = (torch.triu(all_ones, 1+mlen)
+            dec_attn_mask = (torch.triu(all_ones, 1 + mlen)
                              + torch.tril(all_ones, -mask_shift_len)).bool()
         else:
             dec_attn_mask = torch.triu(
-                word_emb.new_ones(qlen, klen), diagonal=1+mlen).bool()
+                word_emb.new_ones(qlen, klen), diagonal=1 + mlen).bool()
 
         hids = []
         # default
         if self.attn_type == 0:
-            pos_seq = torch.arange(klen-1, -1, -1.0, device=word_emb.device,
+            pos_seq = torch.arange(klen - 1, -1, -1.0, device=word_emb.device,
                                    dtype=word_emb.dtype)
             if self.clamp_len > 0:
                 pos_seq.clamp_(max=self.clamp_len)
@@ -760,7 +786,7 @@ class MemTransformerLM(nn.Module):
                     cur_emb = self.r_emb[i][:-qlen]
                     cur_size = cur_emb.size(0)
                     if cur_size < mlen:
-                        cur_emb_pad = cur_emb[0:1].expand(mlen-cur_size, -1, -1)
+                        cur_emb_pad = cur_emb[0:1].expand(mlen - cur_size, -1, -1)
                         cur_emb = torch.cat([cur_emb_pad, cur_emb], 0)
                     else:
                         cur_emb = cur_emb[-mlen:]
@@ -828,7 +854,7 @@ if __name__ == '__main__':
 
     import data_utils
 
-    data = torch.LongTensor(data_len*B).random_(0, args.n_token).to(device)
+    data = torch.LongTensor(data_len * B).random_(0, args.n_token).to(device)
     diter = data_utils.LMOrderedIterator(data, B, tgt_len, device=device, ext_len=ext_len)
 
     cutoffs = [args.n_token // 2]
