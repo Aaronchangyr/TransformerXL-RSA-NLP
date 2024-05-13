@@ -20,40 +20,12 @@ from utils.log_uniform_sampler import LogUniformSampler
 from utils.log_uniform_sampler import sample_logits
 from utils.proj_adaptive_softmax import ProjectedAdaptiveLogSoftmax
 
+from rem import REM
+
 
 @torch.jit.script
 def add_and_scale(tensor1, tensor2, alpha: float):
     return alpha * (tensor1 + tensor2)
-
-
-class REM(nn.Module):
-    def __init__(self, k1, k2, k3, k4, k5, k6, d, truncation):
-        super(REM, self).__init__()
-        self.k1, self.k2, self.k3, self.k4, self.k5, self.k6 = k1, k2, k3, k4, k5, k6
-        self.d, self.truncation = d, truncation
-
-    def create_Toeplitz_3D(self, d, truncation):
-        # Dummy implementation for illustration
-        return torch.randn(d, truncation, truncation)  # Random Toeplitz matrix
-
-    def get_sinusoid(self, L, theta):
-        M = torch.mul(L, theta)  # Using torch.mul for element-wise multiplication
-        s1 = torch.cos(M[:self.k2, ])
-        s2 = torch.sin(M[self.k2:(self.k2 + self.k3), ])
-        s3 = torch.cos(M[(self.k2 + self.k3):(self.k2 + self.k3 + self.k4), ])
-        s4 = torch.sin(M[(self.k2 + self.k3 + self.k4):, ])
-        s = torch.cat([s1, s2, s3, s4], dim=0)
-        return s
-
-    def forward(self, eta, nu, theta):
-        lambda_ = torch.tanh(eta)
-        gamma = torch.sigmoid(nu)
-        L = self.create_Toeplitz_3D(self.d, self.truncation)  # L is of shape (n_heads x query_len x key_len)
-        s = self.get_sinusoid(L, theta)
-        powered_lambda = torch.pow(lambda_, L)
-        powered_gamma = torch.pow(gamma, L)
-        REM = torch.cat([powered_lambda, torch.mul(powered_gamma, s)], dim=0)
-        return REM
 
 
 class PositionalEmbedding(nn.Module):
@@ -124,6 +96,19 @@ class MultiHeadAttn(nn.Module):
         self.q_net = nn.Linear(d_model, n_head * d_head, bias=False)
         self.kv_net = nn.Linear(d_model, 2 * n_head * d_head, bias=False)
 
+        self.rem_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+        # Text_8
+        k1 = 0
+        k2 = 0
+        k3 = 0
+        k4 = 0
+        k5 = 2
+        k6 = 2
+        d = [6, 6, 12, 12]
+
+        self.rem = REM(k1, k2, k3, k4, k5, k6, d, trauncation, t, self.rem_device)  # Initialize REM with appropriate parameters
+
         self.drop = nn.Dropout(dropout)
         self.dropatt = nn.Dropout(dropatt)
         self.o_net = nn.Linear(n_head * d_head, d_model, bias=False)
@@ -133,6 +118,7 @@ class MultiHeadAttn(nn.Module):
         self.scale = 1 / (d_head ** 0.5)
 
         self.pre_lnorm = pre_lnorm
+        self.gate = nn.Parameter(torch.Tensor(1))
 
     def forward(self, h, attn_mask=None, mems=None):
         # multihead attention
@@ -154,21 +140,22 @@ class MultiHeadAttn(nn.Module):
         head_k = head_k.view(c.size(0), c.size(1), self.n_head, self.d_head)
         head_v = head_v.view(c.size(0), c.size(1), self.n_head, self.d_head)
 
-        # [bsz x n_head x qlen x klen]
-        attn_score = torch.einsum('ibnd,jbnd->bnij', head_q, head_k)
-        attn_score.mul_(self.scale)
-        if attn_mask is not None:
-            if attn_mask.dim() == 2:
-                attn_score.masked_fill_(attn_mask[None, None, :, :], -float('inf'))
-            elif attn_mask.dim() == 3:
-                attn_score.masked_fill_(attn_mask[:, None, :, :], -float('inf'))
+        # REM calculation
+        rem_k, rem_v = self.rem(head_k, head_v)
 
-        # [bsz x qlen x klen x n_head]
-        attn_prob = F.softmax(attn_score, dim=3)
+        # Combine original and REM via gating
+        gated_k = torch.sigmoid(self.gate) * rem_k + (1 - torch.sigmoid(self.gate)) * head_k
+        gated_v = torch.sigmoid(self.gate) * rem_v + (1 - torch.sigmoid(self.gate)) * head_v
+
+        attn_score = torch.einsum('ibnd,jbnd->ijbn', (head_q, gated_k))
+        attn_score.mul_(self.scale)
+        if attn_mask is not None and attn_mask.any().item():
+            attn_score.masked_fill_(attn_mask[None, :, :, None], -float('inf'))
+
+        attn_prob = F.softmax(attn_score, dim=1)
         attn_prob = self.dropatt(attn_prob)
 
-        # [bsz x n_head x qlen x klen] * [klen x bsz x n_head x d_head] -> [qlen x bsz x n_head x d_head]
-        attn_vec = torch.einsum('bnij,jbnd->ibnd', attn_prob, head_v)
+        attn_vec = torch.einsum('ijbn,jbnd->ibnd', (attn_prob, gated_v))
         attn_vec = attn_vec.contiguous().view(
             attn_vec.size(0), attn_vec.size(1), self.n_head * self.d_head)
 
