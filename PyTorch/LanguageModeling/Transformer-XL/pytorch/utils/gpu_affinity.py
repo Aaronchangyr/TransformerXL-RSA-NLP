@@ -3,10 +3,14 @@ import math
 import os
 import pathlib
 import re
+import platform
 
 import pynvml
 
-pynvml.nvmlInit()
+try:
+    pynvml.nvmlInit()
+except pynvml.NVMLError_LibraryNotFound:
+    print("NVML Shared Library Not Found. GPU affinity will not be set.")
 
 
 def systemGetDriverVersion():
@@ -125,6 +129,13 @@ def get_thread_siblings_list():
 
 
 def set_affinity(gpu_id, nproc_per_node, mode='socket'):
+    if platform.system() == 'Windows':
+        print("Affinity setting is not supported on Windows.")
+        return
+
+        # Existing code for setting affinity on Unix-based systems
+    affinity = os.sched_getaffinity(0)
+
     if mode == 'socket':
         set_socket_affinity(gpu_id)
     elif mode == 'single':

@@ -25,7 +25,7 @@ import dllogger
 import torch.utils.collect_env
 
 import utils
-
+import platform
 
 class AverageMeter:
     """
@@ -190,19 +190,31 @@ def setup_dllogger(enabled=True, filename=os.devnull):
         dllogger.init([])
 
 
-def create_exp_dir(dir_path, scripts_to_save=None, debug=False):
-    if debug:
-        return
+# def create_exp_dir(dir_path, scripts_to_save=None, debug=False):
+#     if debug:
+#         return
+#
+#     os.makedirs(dir_path, exist_ok=True)
+#
+#     print('Experiment dir : {}'.format(dir_path))
+#     if scripts_to_save is not None:
+#         script_path = os.path.join(dir_path, 'scripts')
+#         os.makedirs(script_path, exist_ok=True)
+#         for script in scripts_to_save:
+#             dst_file = os.path.join(dir_path, 'scripts', os.path.basename(script))
+#             shutil.copyfile(script, dst_file)
 
-    os.makedirs(dir_path, exist_ok=True)
+def create_exp_dir(path, scripts_to_save=None, debug=False):
+    if not debug:
+        os.makedirs(path, exist_ok=True)
+        print('Experiment dir : {}'.format(path))
 
-    print('Experiment dir : {}'.format(dir_path))
-    if scripts_to_save is not None:
-        script_path = os.path.join(dir_path, 'scripts')
-        os.makedirs(script_path, exist_ok=True)
-        for script in scripts_to_save:
-            dst_file = os.path.join(dir_path, 'scripts', os.path.basename(script))
-            shutil.copyfile(script, dst_file)
+        if scripts_to_save is not None:
+            os.makedirs(os.path.join(path, 'scripts'), exist_ok=True)
+            for script in scripts_to_save:
+                dst_file = os.path.join(path, 'scripts', os.path.basename(script))
+                shutil.copyfile(script, dst_file)
+
 
 
 def build_work_dir_name(work_dir, dataset, append_dataset, append_time):
@@ -219,6 +231,9 @@ def build_work_dir_name(work_dir, dataset, append_dataset, append_time):
 
 
 def l2_promote():
+    if platform.system() == 'Windows':
+        print("CUDA runtime library loading is skipped on Windows.")
+        return
     _libcudart = ctypes.CDLL('libcudart.so')
     # Set device limit on the current device
     # cudaLimitMaxL2FetchGranularity = 0x05

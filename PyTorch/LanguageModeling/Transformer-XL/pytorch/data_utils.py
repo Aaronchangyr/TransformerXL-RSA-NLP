@@ -45,8 +45,10 @@ class LMOrderedIterator(object):
         # Trim off any extra elements that wouldn't cleanly fit (remainders).
         data = data[:n_step * bsz]
 
-        # Evenly divide the data across the bsz batches.
-        self.data = data.view(bsz, -1).t().contiguous().pin_memory()
+        # Ensure data is not pinned if CUDA is not available
+        self.data = data.view(bsz, -1).t().contiguous()
+        if torch.cuda.is_available():
+            self.data = self.data.pin_memory()
 
         if mem_len and warmup:
             self.warmup_batches = (mem_len + bptt - 1) // bptt
