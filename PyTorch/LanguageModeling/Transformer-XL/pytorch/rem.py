@@ -47,7 +47,7 @@ class REM(nn.Module):
         cyclic_rems = powered_gamma[:self.k2 + self.k3]
 
         # print(self.d)
-git
+
         d_copy = self.d.copy()
 
         # dilate regular rems: (k4)
